@@ -33,13 +33,13 @@ struct enum_val xdp_modes[] = { { "native", XDP_MODE_NATIVE },
 				{ "skb", XDP_MODE_SKB },
 				{ NULL, 0 } };
 
-enum fib_mode {
+enum fwd_mode {
 	FIB_MODE_DIRECT,
 	FIB_MODE_FULL
 };
 
-struct enum_val fib_modes[] = { { "direct", FIB_MODE_DIRECT },
-				{ "full", FIB_MODE_FULL },
+struct enum_val fwd_modes[] = { { "fib-direct", FIB_MODE_DIRECT },
+				{ "fib-full", FIB_MODE_FULL },
 				{ NULL, 0 } };
 
 static int find_prog(struct iface *iface, bool detach)
@@ -81,17 +81,18 @@ static int find_prog(struct iface *iface, bool detach)
 }
 
 struct load_opts {
-	enum fib_mode fib_mode;
+	enum fwd_mode fwd_mode;
 	enum xdp_attach_mode xdp_mode;
 	struct iface *ifaces;
-} defaults_load = { .fib_mode = FIB_MODE_FULL };
+} defaults_load = { .fwd_mode = FIB_MODE_FULL };
 
 struct prog_option load_options[] = {
-	DEFINE_OPTION("fib-mode", OPT_ENUM, struct load_opts, fib_mode,
+	DEFINE_OPTION("fwd-mode", OPT_ENUM, struct load_opts, fwd_mode,
 		      .short_opt = 'f',
-		      .typearg = fib_modes,
+		      .typearg = fwd_modes,
 		      .metavar = "<direct|full>",
-		      .help = "Perform full or direct (skipping rules) FIB lookups; default full"),
+		      .help = "Exec xdp-redirect performing lookup on the FIB table (full or direct); "
+		      "fib-direct skips fib-rules. Default value is fib-full"),
 	DEFINE_OPTION("xdp-mode", OPT_ENUM, struct load_opts, xdp_mode,
 		      .short_opt = 'm',
 		      .typearg = xdp_modes,
@@ -117,7 +118,7 @@ static int do_load(const void *cfg, __unused const char *pin_root_path)
 	int ret = EXIT_FAILURE;
 	struct iface *iface;
 
-	switch (opt->fib_mode) {
+	switch (opt->fwd_mode) {
 	case FIB_MODE_FULL:
 		opts.prog_name = "xdp_fwd";
 		break;
