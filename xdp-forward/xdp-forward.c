@@ -35,11 +35,13 @@ struct enum_val xdp_modes[] = { { "native", XDP_MODE_NATIVE },
 
 enum fwd_mode {
 	FIB_MODE_DIRECT,
-	FIB_MODE_FULL
+	FIB_MODE_FULL,
+	FLOWTABLE_MODE,
 };
 
 struct enum_val fwd_modes[] = { { "fib-direct", FIB_MODE_DIRECT },
 				{ "fib-full", FIB_MODE_FULL },
+				{ "flowtable", FLOWTABLE_MODE },
 				{ NULL, 0 } };
 
 static int find_prog(struct iface *iface, bool detach)
@@ -61,7 +63,8 @@ static int find_prog(struct iface *iface, bool detach)
 	while ((prog = xdp_multiprog__next_prog(prog, mp))) {
 	check:
 		if (!strcmp(xdp_program__name(prog), "xdp_fwd") ||
-		    !strcmp(xdp_program__name(prog), "xdp_fwd_direct")) {
+		    !strcmp(xdp_program__name(prog), "xdp_fwd_direct") ||
+		    !strcmp(xdp_program__name(prog), "xdp_fwd_flowtable")) {
 			mode = xdp_multiprog__attach_mode(mp);
 			ret = 0;
 			if (detach) {
@@ -90,9 +93,10 @@ struct prog_option load_options[] = {
 	DEFINE_OPTION("fwd-mode", OPT_ENUM, struct load_opts, fwd_mode,
 		      .short_opt = 'f',
 		      .typearg = fwd_modes,
-		      .metavar = "<direct|full>",
-		      .help = "Exec xdp-redirect performing lookup on the FIB table (full or direct); "
-		      "fib-direct skips fib-rules. Default value is fib-full"),
+		      .metavar = "<direct|full|flowtable>",
+		      .help = "Exec xdp-redirect performing lookup in the FIB table (full or direct) "
+		      "or in the nf-flowtable; fib-direct skips fib-rules. nf-flowtable must be configured separately. "
+		      "Default value is fib-full"),
 	DEFINE_OPTION("xdp-mode", OPT_ENUM, struct load_opts, xdp_mode,
 		      .short_opt = 'm',
 		      .typearg = xdp_modes,
@@ -124,6 +128,9 @@ static int do_load(const void *cfg, __unused const char *pin_root_path)
 		break;
 	case FIB_MODE_DIRECT:
 		opts.prog_name = "xdp_fwd_direct";
+		break;
+	case FLOWTABLE_MODE:
+		opts.prog_name = "xdp_fwd_flowtable";
 		break;
 	default:
 		goto end;
