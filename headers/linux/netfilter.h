@@ -10,7 +10,7 @@
 
 struct flow_ports {
 	__be16 source, dest;
-} __attribute__((preserve_access_index));
+};
 
 enum ip_conntrack_dir {
 	IP_CT_DIR_ORIGINAL,

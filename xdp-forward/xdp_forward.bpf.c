@@ -191,7 +191,7 @@ static __always_inline __u16 csum_replace16(__u32 csum, __u32 *from, __u32 *to)
 }
 
 static __always_inline int
-xdp_flowtable_offload_check_iphdr(struct iphdr *iph)
+xdp_flowtable_check_iphdr(struct iphdr *iph)
 {
 	/* ip fragmented traffic */
 	if (iph->frag_off & bpf_htons(IP_MF | IP_OFFSET))
@@ -208,7 +208,7 @@ xdp_flowtable_offload_check_iphdr(struct iphdr *iph)
 }
 
 static __always_inline int
-xdp_flowtable_offload_check_tcp_state(void *ports, void *data_end, __u8 proto)
+xdp_flowtable_check_tcp_state(void *ports, void *data_end, __u8 proto)
 {
 	if (proto == IPPROTO_TCP) {
 		struct tcphdr *tcph = ports;
@@ -224,7 +224,7 @@ xdp_flowtable_offload_check_tcp_state(void *ports, void *data_end, __u8 proto)
 }
 
 static __always_inline void
-xdp_flowtable_offload_nat_port(struct flow_ports *ports, void *data_end,
+xdp_flowtable_update_port_csum(struct flow_ports *ports, void *data_end,
 			       __u8 proto, __be16 port, __be16 nat_port)
 {
 	switch (proto) {
@@ -259,9 +259,9 @@ xdp_flowtable_offload_nat_port(struct flow_ports *ports, void *data_end,
 }
 
 static __always_inline void
-xdp_flowtable_offload_snat_port(const struct flow_offload *flow,
-				struct flow_ports *ports, void *data_end,
-				__u8 proto, enum flow_offload_tuple_dir dir)
+xdp_flowtable_snat_port(const struct flow_offload *flow,
+			struct flow_ports *ports, void *data_end,
+			__u8 proto, enum flow_offload_tuple_dir dir)
 {
 	__be16 port, nat_port;
 
@@ -271,6 +271,9 @@ xdp_flowtable_offload_snat_port(const struct flow_offload *flow,
 	switch (dir) {
 	case FLOW_OFFLOAD_DIR_ORIGINAL:
 		port = ports->source;
+		/* netfilter stores the selected sport as destination port for
+		 * traffic in the opposite direction.
+		 */
 		bpf_core_read(&nat_port, bpf_core_type_size(nat_port),
 			      &flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].tuple.dst_port);
 		ports->source = nat_port;
@@ -285,13 +288,13 @@ xdp_flowtable_offload_snat_port(const struct flow_offload *flow,
 		return;
 	}
 
-	xdp_flowtable_offload_nat_port(ports, data_end, proto, port, nat_port);
+	xdp_flowtable_update_port_csum(ports, data_end, proto, port, nat_port);
 }
 
 static __always_inline void
-xdp_flowtable_offload_dnat_port(const struct flow_offload *flow,
-				struct flow_ports *ports, void *data_end,
-				__u8 proto, enum flow_offload_tuple_dir dir)
+xdp_flowtable_dnat_port(const struct flow_offload *flow,
+			struct flow_ports *ports, void *data_end, __u8 proto,
+			enum flow_offload_tuple_dir dir)
 {
 	__be16 port, nat_port;
 
@@ -301,6 +304,9 @@ xdp_flowtable_offload_dnat_port(const struct flow_offload *flow,
 	switch (dir) {
 	case FLOW_OFFLOAD_DIR_ORIGINAL:
 		port = ports->dest;
+		/* netfilter stores the selected dport as source port for
+		 * traffic in the opposite direction.
+		 */
 		bpf_core_read(&nat_port, bpf_core_type_size(nat_port),
 			      &flow->tuplehash[FLOW_OFFLOAD_DIR_REPLY].tuple.src_port);
 		ports->dest = nat_port;
@@ -315,12 +321,12 @@ xdp_flowtable_offload_dnat_port(const struct flow_offload *flow,
 		return;
 	}
 
-	xdp_flowtable_offload_nat_port(ports, data_end, proto, port, nat_port);
+	xdp_flowtable_update_port_csum(ports, data_end, proto, port, nat_port);
 }
 
 static __always_inline void
-xdp_flowtable_offload_ip_l4(struct iphdr *iph, void *data_end,
-			    __be32 addr, __be32 nat_addr)
+xdp_flowtable_update_ipv4_csum(struct iphdr *iph, void *data_end,
+			       __be32 addr, __be32 nat_addr)
 {
 	switch (iph->protocol) {
 	case IPPROTO_TCP: {
@@ -354,9 +360,8 @@ xdp_flowtable_offload_ip_l4(struct iphdr *iph, void *data_end,
 }
 
 static __always_inline void
-xdp_flowtable_offload_snat_ip(const struct flow_offload *flow,
-			      struct iphdr *iph, void *data_end,
-			      enum flow_offload_tuple_dir dir)
+xdp_flowtable_snat_ip(const struct flow_offload *flow, struct iphdr *iph,
+		      void *data_end, enum flow_offload_tuple_dir dir)
 {
 	__be32 addr, nat_addr;
 
@@ -378,13 +383,12 @@ xdp_flowtable_offload_snat_ip(const struct flow_offload *flow,
 	}
 	iph->check = csum_replace4((__u32)iph->check, addr, nat_addr);
 
-	xdp_flowtable_offload_ip_l4(iph, data_end, addr, nat_addr);
+	xdp_flowtable_update_ipv4_csum(iph, data_end, addr, nat_addr);
 }
 
 static __always_inline void
-xdp_flowtable_offload_get_dnat_ip(const struct flow_offload *flow,
-				  enum flow_offload_tuple_dir dir,
-				  __be32 *addr)
+xdp_flowtable_get_dnat_ip(__be32 *addr, const struct flow_offload *flow,
+			  enum flow_offload_tuple_dir dir)
 {
 	switch (dir) {
 	case FLOW_OFFLOAD_DIR_ORIGINAL:
@@ -399,9 +403,8 @@ xdp_flowtable_offload_get_dnat_ip(const struct flow_offload *flow,
 }
 
 static __always_inline void
-xdp_flowtable_offload_dnat_ip(const struct flow_offload *flow,
-			      struct iphdr *iph, void *data_end,
-			      enum flow_offload_tuple_dir dir)
+xdp_flowtable_dnat_ip(const struct flow_offload *flow, struct iphdr *iph,
+		      void *data_end, enum flow_offload_tuple_dir dir)
 {
 	__be32 addr, nat_addr;
 
@@ -423,12 +426,13 @@ xdp_flowtable_offload_dnat_ip(const struct flow_offload *flow,
 	}
 	iph->check = csum_replace4((__u32)iph->check, addr, nat_addr);
 
-	xdp_flowtable_offload_ip_l4(iph, data_end, addr, nat_addr);
+	xdp_flowtable_update_ipv4_csum(iph, data_end, addr, nat_addr);
 }
 
 static __always_inline void
-xdp_flowtable_offload_ipv6_l4(struct ipv6hdr *ip6h, void *data_end,
-			      struct in6_addr *addr, struct in6_addr *nat_addr)
+xdp_flowtable_update_ipv6_csum(struct ipv6hdr *ip6h, void *data_end,
+			       struct in6_addr *addr,
+			       struct in6_addr *nat_addr)
 {
 	switch (ip6h->nexthdr) {
 	case IPPROTO_TCP: {
@@ -464,9 +468,8 @@ xdp_flowtable_offload_ipv6_l4(struct ipv6hdr *ip6h, void *data_end,
 }
 
 static __always_inline void
-xdp_flowtable_offload_snat_ipv6(const struct flow_offload *flow,
-				struct ipv6hdr *ip6h, void *data_end,
-				enum flow_offload_tuple_dir dir)
+xdp_flowtable_snat_ipv6(const struct flow_offload *flow, struct ipv6hdr *ip6h,
+			void *data_end, enum flow_offload_tuple_dir dir)
 {
 	struct in6_addr addr, nat_addr;
 
@@ -487,13 +490,13 @@ xdp_flowtable_offload_snat_ipv6(const struct flow_offload *flow,
 		return;
 	}
 
-	xdp_flowtable_offload_ipv6_l4(ip6h, data_end, &addr, &nat_addr);
+	xdp_flowtable_update_ipv6_csum(ip6h, data_end, &addr, &nat_addr);
 }
 
 static __always_inline void
-xdp_flowtable_offload_get_dnat_ipv6(const struct flow_offload *flow,
-				    enum flow_offload_tuple_dir dir,
-				    struct in6_addr *addr)
+xdp_flowtable_get_dnat_ipv6(struct in6_addr *addr,
+			    const struct flow_offload *flow,
+			    enum flow_offload_tuple_dir dir)
 {
 	switch (dir) {
 	case FLOW_OFFLOAD_DIR_ORIGINAL:
@@ -508,9 +511,8 @@ xdp_flowtable_offload_get_dnat_ipv6(const struct flow_offload *flow,
 }
 
 static __always_inline void
-xdp_flowtable_offload_dnat_ipv6(const struct flow_offload *flow,
-				struct ipv6hdr *ip6h, void *data_end,
-				enum flow_offload_tuple_dir dir)
+xdp_flowtable_dnat_ipv6(const struct flow_offload *flow, struct ipv6hdr *ip6h,
+			void *data_end, enum flow_offload_tuple_dir dir)
 {
 	struct in6_addr addr, nat_addr;
 
@@ -531,15 +533,14 @@ xdp_flowtable_offload_dnat_ipv6(const struct flow_offload *flow,
 		return;
 	}
 
-	xdp_flowtable_offload_ipv6_l4(ip6h, data_end, &addr, &nat_addr);
+	xdp_flowtable_update_ipv6_csum(ip6h, data_end, &addr, &nat_addr);
 }
 
 static __always_inline void
-xdp_flowtable_offload_forward_ip(const struct flow_offload *flow,
-				 void *data, void *data_end,
-				 struct flow_ports *ports,
-				 enum flow_offload_tuple_dir dir,
-				 unsigned long flags)
+xdp_flowtable_forward_ip(const struct flow_offload *flow, void *data,
+			 void *data_end, struct flow_ports *ports,
+			 enum flow_offload_tuple_dir dir,
+			 unsigned long flags)
 {
 	struct iphdr *iph = data + sizeof(struct ethhdr);
 
@@ -547,25 +548,24 @@ xdp_flowtable_offload_forward_ip(const struct flow_offload *flow,
 		return;
 
 	if (flags & BIT(NF_FLOW_SNAT)) {
-		xdp_flowtable_offload_snat_port(flow, ports, data_end,
-						iph->protocol, dir);
-		xdp_flowtable_offload_snat_ip(flow, iph, data_end, dir);
+		xdp_flowtable_snat_port(flow, ports, data_end, iph->protocol,
+					dir);
+		xdp_flowtable_snat_ip(flow, iph, data_end, dir);
 	}
 	if (flags & BIT(NF_FLOW_DNAT)) {
-		xdp_flowtable_offload_dnat_port(flow, ports, data_end,
-						iph->protocol, dir);
-		xdp_flowtable_offload_dnat_ip(flow, iph, data_end, dir);
+		xdp_flowtable_dnat_port(flow, ports, data_end, iph->protocol,
+					dir);
+		xdp_flowtable_dnat_ip(flow, iph, data_end, dir);
 	}
 
 	ip_decrease_ttl(iph);
 }
 
 static __always_inline void
-xdp_flowtable_offload_forward_ipv6(const struct flow_offload *flow,
-				   void *data, void *data_end,
-				   struct flow_ports *ports,
-				   enum flow_offload_tuple_dir dir,
-				   unsigned long flags)
+xdp_flowtable_forward_ipv6(const struct flow_offload *flow, void *data,
+			   void *data_end, struct flow_ports *ports,
+			   enum flow_offload_tuple_dir dir,
+			   unsigned long flags)
 {
 	struct ipv6hdr *ip6h = data + sizeof(struct ethhdr);
 
@@ -573,14 +573,14 @@ xdp_flowtable_offload_forward_ipv6(const struct flow_offload *flow,
 		return;
 
 	if (flags & BIT(NF_FLOW_SNAT)) {
-		xdp_flowtable_offload_snat_port(flow, ports, data_end,
-						ip6h->nexthdr, dir);
-		xdp_flowtable_offload_snat_ipv6(flow, ip6h, data_end, dir);
+		xdp_flowtable_snat_port(flow, ports, data_end, ip6h->nexthdr,
+					dir);
+		xdp_flowtable_snat_ipv6(flow, ip6h, data_end, dir);
 	}
 	if (flags & BIT(NF_FLOW_DNAT)) {
-		xdp_flowtable_offload_dnat_port(flow, ports, data_end,
-						ip6h->nexthdr, dir);
-		xdp_flowtable_offload_dnat_ipv6(flow, ip6h, data_end, dir);
+		xdp_flowtable_dnat_port(flow, ports, data_end, ip6h->nexthdr,
+					dir);
+		xdp_flowtable_dnat_ipv6(flow, ip6h, data_end, dir);
 	}
 
 	ip6h->hop_limit--;
@@ -601,7 +601,6 @@ int xdp_fwd_flowtable(struct xdp_md *ctx)
 	struct flow_offload *flow;
 	struct flow_ports *ports;
 	unsigned long flags;
-	int iifindex;
 
 	if (eth + 1 > data_end)
 		return XDP_PASS;
@@ -615,11 +614,11 @@ int xdp_fwd_flowtable(struct xdp_md *ctx)
 			return XDP_PASS;
 
 		/* sanity check on ip header */
-		if (xdp_flowtable_offload_check_iphdr(iph) < 0)
+		if (xdp_flowtable_check_iphdr(iph) < 0)
 			return XDP_PASS;
 
-		if (xdp_flowtable_offload_check_tcp_state(ports, data_end,
-							  iph->protocol) < 0)
+		if (xdp_flowtable_check_tcp_state(ports, data_end,
+						  iph->protocol) < 0)
 			return XDP_PASS;
 
 		tuple.family		= AF_INET;
@@ -644,8 +643,8 @@ int xdp_fwd_flowtable(struct xdp_md *ctx)
 		if (ip6h->hop_limit <= 1)
 			return XDP_PASS;
 
-		if (xdp_flowtable_offload_check_tcp_state(ports, data_end,
-							  ip6h->nexthdr) < 0)
+		if (xdp_flowtable_check_tcp_state(ports, data_end,
+						  ip6h->nexthdr) < 0)
 			return XDP_PASS;
 
 		tuple.family		= AF_INET6;
@@ -673,37 +672,35 @@ int xdp_fwd_flowtable(struct xdp_md *ctx)
 	if (bpf_core_read(&flags, sizeof(flags), &flow->flags))
 		return XDP_PASS;
 
-	switch (tuplehash->tuple.xmit_type) {
-	case FLOW_OFFLOAD_XMIT_NEIGH:
-		/* update the destination address in case of dnatting before
-		 * performing the route lookup
-		 */
-		if (tuple.family == AF_INET6)
-			xdp_flowtable_offload_get_dnat_ipv6(flow, dir,
-					(struct in6_addr *)&tuple.ipv6_dst);
-		else
-			xdp_flowtable_offload_get_dnat_ip(flow, dir, &tuple.ipv4_src);
-
-		if (bpf_fib_lookup(ctx, &tuple, sizeof(tuple), 0))
-			return XDP_PASS;
-
-		if (tuple.family == AF_INET6)
-			xdp_flowtable_offload_forward_ipv6(flow, data, data_end,
-							   ports, dir, flags);
-		else
-			xdp_flowtable_offload_forward_ip(flow, data, data_end,
-							 ports, dir, flags);
-
-		__builtin_memcpy(eth->h_dest, tuple.dmac, ETH_ALEN);
-		__builtin_memcpy(eth->h_source, tuple.smac, ETH_ALEN);
-		iifindex = tuple.ifindex;
-		break;
-	case FLOW_OFFLOAD_XMIT_DIRECT:
-	default:
+	if (tuplehash->tuple.xmit_type != FLOW_OFFLOAD_XMIT_NEIGH)
 		return XDP_PASS;
+
+	/* update the destination address in case of dnatting before
+	 * performing the route lookup
+	 */
+	if (tuple.family == AF_INET6) {
+		struct in6_addr *dst_addr = (struct in6_addr *)&tuple.ipv6_dst;
+
+		xdp_flowtable_get_dnat_ipv6(dst_addr, flow, dir);
+	} else {
+		xdp_flowtable_get_dnat_ip(&tuple.ipv4_src, flow, dir);
 	}
 
-	return bpf_redirect(iifindex, 0);
+	if (bpf_fib_lookup(ctx, &tuple, sizeof(tuple), 0) !=
+	    BPF_FIB_LKUP_RET_SUCCESS)
+		return XDP_PASS;
+
+	if (tuple.family == AF_INET6)
+		xdp_flowtable_forward_ipv6(flow, data, data_end, ports, dir,
+					   flags);
+	else
+		xdp_flowtable_forward_ip(flow, data, data_end, ports, dir,
+					 flags);
+
+	__builtin_memcpy(eth->h_dest, tuple.dmac, ETH_ALEN);
+	__builtin_memcpy(eth->h_source, tuple.smac, ETH_ALEN);
+
+	return bpf_redirect(tuple.ifindex, 0);
 }
 
 char _license[] SEC("license") = "GPL";
