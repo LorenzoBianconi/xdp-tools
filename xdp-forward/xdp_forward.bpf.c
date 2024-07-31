@@ -191,23 +191,6 @@ static __always_inline __u16 csum_replace16(__u32 csum, __u32 *from, __u32 *to)
 }
 
 static __always_inline int
-xdp_flowtable_check_iphdr(struct iphdr *iph)
-{
-	/* ip fragmented traffic */
-	if (iph->frag_off & bpf_htons(IP_MF | IP_OFFSET))
-		return -1;
-
-	/* ip options */
-	if (iph->ihl * 4 != sizeof(*iph))
-		return -1;
-
-	if (iph->ttl <= 1)
-		return -1;
-
-	return 0;
-}
-
-static __always_inline int
 xdp_flowtable_check_tcp_state(void *ports, void *data_end, __u8 proto)
 {
 	if (proto == IPPROTO_TCP) {
@@ -613,8 +596,15 @@ int xdp_fwd_flowtable(struct xdp_md *ctx)
 		if (ports + 1 > data_end)
 			return XDP_PASS;
 
-		/* sanity check on ip header */
-		if (xdp_flowtable_check_iphdr(iph) < 0)
+		/* ip fragmented traffic */
+		if (iph->frag_off & bpf_htons(IP_MF | IP_OFFSET))
+			return XDP_PASS;
+
+		/* ip options */
+		if (iph->ihl * 4 != sizeof(*iph))
+			return XDP_PASS;
+
+		if (iph->ttl <= 1)
 			return XDP_PASS;
 
 		if (xdp_flowtable_check_tcp_state(ports, data_end,
