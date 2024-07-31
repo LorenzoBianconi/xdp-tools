@@ -673,7 +673,7 @@ int xdp_fwd_flowtable(struct xdp_md *ctx)
 
 		xdp_flowtable_get_dnat_ipv6(dst_addr, flow, dir);
 	} else {
-		xdp_flowtable_get_dnat_ip(&tuple.ipv4_src, flow, dir);
+		xdp_flowtable_get_dnat_ip(&tuple.ipv4_dst, flow, dir);
 	}
 
 	if (bpf_fib_lookup(ctx, &tuple, sizeof(tuple), 0) !=
